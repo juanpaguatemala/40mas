@@ -1,17 +1,20 @@
 import 'server-only';
+import { createPublicKey, createVerify } from 'node:crypto';
 import { cert, getApps, initializeApp, type App } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 
 /**
  * Firebase Admin (solo servidor). Variables de entorno en Vercel:
  *   FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY
- * Con los emuladores (FIRESTORE_EMULATOR_HOST / FIREBASE_AUTH_EMULATOR_HOST) basta el PROJECT_ID.
+ *
+ * Nota: no se usa firebase-admin/auth porque depende de un módulo (jose, vía jwks-rsa)
+ * que el entorno de funciones de Vercel no puede cargar. El token de sesión se verifica
+ * aquí mismo con las llaves públicas de Google, como indica la documentación de Firebase.
  */
 function app(): App {
   const existente = getApps()[0];
   if (existente) return existente;
-  const projectId = process.env.FIREBASE_PROJECT_ID ?? process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+  const projectId = proyecto();
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
   const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
   if (clientEmail && privateKey) {
@@ -20,7 +23,10 @@ function app(): App {
   return initializeApp({ projectId });
 }
 
-export const adminAuth = () => getAuth(app());
+function proyecto() {
+  return (process.env.FIREBASE_PROJECT_ID ?? process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? '').trim();
+}
+
 export const db = () => getFirestore(app());
 
 export interface Usuario {
@@ -36,15 +42,88 @@ export function esAdmin(email: string | undefined) {
   return Boolean(email && lista.includes(email.toLowerCase()));
 }
 
-/** Verifica el token de Firebase que manda el navegador en «Authorization: Bearer …». */
-export async function usuarioDeRequest(req: Request): Promise<Usuario | null> {
-  const h = req.headers.get('authorization') ?? '';
-  const token = h.startsWith('Bearer ') ? h.slice(7) : '';
-  if (!token) return null;
+// --- Verificación del token de sesión de Firebase (ID token) ---
+
+const URL_CERTS = 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
+let certs: { llaves: Record<string, string>; vence: number } | null = null;
+
+async function certificados(forzar = false): Promise<Record<string, string>> {
+  if (!forzar && certs && certs.vence > Date.now()) return certs.llaves;
+  const r = await fetch(URL_CERTS, { cache: 'no-store' });
+  if (!r.ok) throw new Error(`No se pudieron obtener las llaves de Google (${r.status})`);
+  const maxAge = Number(/max-age=(\d+)/.exec(r.headers.get('cache-control') ?? '')?.[1] ?? 3600);
+  certs = { llaves: (await r.json()) as Record<string, string>, vence: Date.now() + maxAge * 1000 };
+  return certs.llaves;
+}
+
+function b64url(s: string) {
+  return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+}
+
+interface Claims {
+  sub?: string;
+  aud?: string;
+  iss?: string;
+  exp?: number;
+  iat?: number;
+  auth_time?: number;
+  email?: string;
+  name?: string;
+}
+
+/** Verifica un ID token de Firebase y devuelve sus datos, o null si no es válido. */
+export async function verificarIdToken(token: string): Promise<Claims | null> {
+  const partes = token.split('.');
+  if (partes.length !== 3) return null;
+  let header: { alg?: string; kid?: string };
+  let claims: Claims;
   try {
-    const t = await adminAuth().verifyIdToken(token);
-    return { uid: t.uid, email: t.email ?? '', nombre: (t.name as string | undefined) ?? '', admin: esAdmin(t.email) };
+    header = JSON.parse(b64url(partes[0]).toString('utf8'));
+    claims = JSON.parse(b64url(partes[1]).toString('utf8'));
   } catch {
     return null;
   }
+
+  const projectId = proyecto();
+  const ahora = Math.floor(Date.now() / 1000);
+  const datosOk =
+    Boolean(projectId) &&
+    claims.aud === projectId &&
+    claims.iss === `https://securetoken.google.com/${projectId}` &&
+    typeof claims.sub === 'string' &&
+    claims.sub.length > 0 &&
+    claims.sub.length <= 128 &&
+    typeof claims.exp === 'number' &&
+    claims.exp > ahora &&
+    typeof claims.iat === 'number' &&
+    claims.iat <= ahora + 300 &&
+    (claims.auth_time === undefined || claims.auth_time <= ahora + 300);
+  if (!datosOk) return null;
+
+  // Emulador local: los tokens no van firmados.
+  if (process.env.FIREBASE_AUTH_EMULATOR_HOST) return claims;
+
+  if (header.alg !== 'RS256' || !header.kid) return null;
+  let llaves = await certificados();
+  if (!llaves[header.kid]) llaves = await certificados(true);
+  const pem = llaves[header.kid];
+  if (!pem) return null;
+  try {
+    const ok = createVerify('RSA-SHA256')
+      .update(`${partes[0]}.${partes[1]}`)
+      .verify(createPublicKey(pem), b64url(partes[2]));
+    return ok ? claims : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Verifica el token de Firebase que manda el navegador en «Authorization: Bearer …». */
+export async function usuarioDeRequest(req: Request): Promise<Usuario | null> {
+  const h = req.headers.get('authorization') ?? '';
+  const token = h.startsWith('Bearer ') ? h.slice(7).trim() : '';
+  if (!token) return null;
+  const c = await verificarIdToken(token);
+  if (!c?.sub) return null;
+  return { uid: c.sub, email: c.email ?? '', nombre: c.name ?? '', admin: esAdmin(c.email) };
 }

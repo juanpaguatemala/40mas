@@ -16,11 +16,43 @@ function app(): App {
   if (existente) return existente;
   const projectId = proyecto();
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  const privateKey = normalizarClave(process.env.FIREBASE_PRIVATE_KEY);
   if (clientEmail && privateKey) {
-    return initializeApp({ credential: cert({ projectId, clientEmail, privateKey }), projectId });
+    try {
+      return initializeApp({ credential: cert({ projectId, clientEmail, privateKey }), projectId });
+    } catch (e) {
+      // Diagnóstico sin revelar la clave: solo su forma.
+      const crudo = process.env.FIREBASE_PRIVATE_KEY ?? '';
+      console.error('[24mas] FIREBASE_PRIVATE_KEY no válida', {
+        longitud: crudo.length,
+        tieneBegin: crudo.includes('BEGIN PRIVATE KEY'),
+        tieneEnd: crudo.includes('END PRIVATE KEY'),
+        lineasNormalizadas: privateKey.split('\n').length,
+      });
+      throw e;
+    }
   }
   return initializeApp({ projectId });
+}
+
+/**
+ * Acepta la clave privada tal como se haya pegado en Vercel: con o sin comillas,
+ * con \n escritos como texto, con saltos de línea reales o con espacios en su lugar.
+ * La reconstruye en formato PEM estándar a partir de su contenido base64.
+ */
+function normalizarClave(valor: string | undefined): string | undefined {
+  if (!valor) return undefined;
+  const texto = valor
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/\\r/g, '')
+    .replace(/\\n/g, '\n')
+    .replace(/,\s*$/, '');
+  const m = /-----BEGIN ([A-Z ]*PRIVATE KEY)-----([\s\S]*?)-----END \1-----/.exec(texto);
+  if (!m) return texto;
+  const cuerpo = m[2].replace(/[^A-Za-z0-9+/=]/g, '');
+  const lineas = cuerpo.match(/.{1,64}/g) ?? [];
+  return `-----BEGIN ${m[1]}-----\n${lineas.join('\n')}\n-----END ${m[1]}-----\n`;
 }
 
 function proyecto() {

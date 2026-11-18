@@ -1,0 +1,77 @@
+/* Estilos del reproductor de audio (se importan en app/layout.tsx). */
+.audio-player {
+  margin: 1rem 0 1.5rem;
+  padding: 1rem 1.25rem;
+  border-radius: 1rem;
+  background: #f6f3ee;
+  border: 1px solid #e4ddd2;
+}
+.audio-narrador {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  color: #6b5f52;
+}
+.audio-controles {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+}
+.audio-controles button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #3d342b;
+  cursor: pointer;
+}
+.audio-controles button:focus-visible {
+  outline: 2px solid #8a6d3b;
+  outline-offset: 2px;
+}
+.audio-play {
+  width: 56px;
+  height: 56px;
+  background: #3d342b !important;
+  color: #fff !important;
+}
+.audio-salto {
+  position: absolute;
+  font-size: 0.55rem;
+  font-weight: 700;
+}
+.audio-velocidad {
+  font-size: 0.9rem;
+  font-weight: 700;
+  border: 1px solid #cbbfae !important;
+  padding: 0 0.6rem;
+}
+.audio-progreso {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: #6b5f52;
+}
+.audio-progreso input[type='range'] {
+  flex: 1;
+  accent-color: #3d342b;
+}
+.audio-aviso {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.75rem 0 1.25rem;
+  font-size: 0.9rem;
+  color: #7a6f63;
+}
